@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testbed>
+    <devices>
+        <device>
+            <properties>
+                <property id="uuid_1"/>
+                <property name="objname">fc10</property>
+            </properties>
+            <devicetype>fc</devicetype>
+            <devices>
+                <device>
+                    <properties>
+                        <property id="uuid_2"/>
+                        <property name="objname">cluster10</property>
+                    </properties>
+                    <devicetype>cluster</devicetype>
+                    <devices>
+                        <device>
+                            <properties>
+                                <property id="uuid_3"/>
+                                <property name="objname">cna10</property>
+                            </properties>
+                            <devicetype>cna</devicetype>
+                        </device>
+                        <device>
+                            <properties>
+                                <property id="uuid_4"/>
+                                <property name="objname">cna20</property>
+                            </properties>
+                            <devicetype>cna</devicetype>
+                        </device>
+                    </devices>
+                </device>
+            </devices>
+        </device>
+        <device>
+            <properties>
+                <property id="uuid_5"/>
+                <property name="objname">fc20</property>
+            </properties>
+            <devicetype>fc</devicetype>
+            <devices>
+                <device>
+                    <properties>
+                        <property id="uuid_6"/>
+                        <property name="objname">cluster20</property>
+                    </properties>
+                    <devicetype>cluster</devicetype>
+                    <devices>
+                        <device>
+                            <properties>
+                                <property id="uuid_7"/>
+                                <property name="objname">cna30</property>
+                            </properties>
+                            <devicetype>cna</devicetype>
+                        </device>
+                        <device>
+                            <properties>
+                                <property id="uuid_8"/>
+                                <property name="objname">cna40</property>
+                            </properties>
+                            <devicetype>cna</devicetype>
+                        </device>
+                    </devices>
+                </device>
+            </devices>
+        </device>
+    </devices>
+    <links>
+        <link source="uuid_3" target="uuid_4" dir="双向"/>
+        <link source="uuid_7" target="uuid_8" dir="单向"/>
+    </links>
+</testbed>

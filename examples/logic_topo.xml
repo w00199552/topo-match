@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<logic_topology>
+    <devices>
+        <device>
+            <properties>
+                <property id="uuid_1"/>
+                <property name="objname">fc1</property>
+            </properties>
+            <devicetype>fc</devicetype>
+            <devices>
+                <device>
+                    <properties>
+                        <property id="uuid_2"/>
+                        <property name="objname">cluster1</property>
+                    </properties>
+                    <devicetype>cluster</devicetype>
+                    <devices>
+                        <device>
+                            <properties>
+                                <property id="uuid_3"/>
+                                <property name="objname">cna1</property>
+                            </properties>
+                            <devicetype>cna</devicetype>
+                        </device>
+                        <device>
+                            <properties>
+                                <property id="uuid_4"/>
+                                <property name="objname">cna2</property>
+                            </properties>
+                            <devicetype>cna</devicetype>
+                        </device>
+                    </devices>
+                </device>
+            </devices>
+        </device>
+    </devices>
+    <links>
+        <link source="uuid_3" target="uuid_4" dir="单向"/>
+    </links>
+</logic_topology>
