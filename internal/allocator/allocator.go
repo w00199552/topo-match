@@ -61,7 +61,6 @@ func (a *Allocator) Alloc(logic *model.Topology, testbedNames []string) (*AllocR
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Collect testbed topologies
 	type tbEntry struct {
 		name string
 		topo *model.Topology
@@ -94,7 +93,6 @@ func (a *Allocator) Alloc(logic *model.Topology, testbedNames []string) (*AllocR
 		}(i, entry.name, entry.topo)
 	}
 
-	// Collect results - return first successful match
 	var firstResult *matcher.MatchResult
 	for i := 0; i < len(entries); i++ {
 		output := <-ch
@@ -107,12 +105,13 @@ func (a *Allocator) Alloc(logic *model.Topology, testbedNames []string) (*AllocR
 		return nil, fmt.Errorf("无空闲的测试床物理环境可用")
 	}
 
-	// Mark matched nodes as used (still holding the lock)
+	// Mark matched nodes as used with reference counting
 	topo := a.testbeds[firstResult.TestbedName]
 	for physUUID := range firstResult.Nodes {
 		node := topo.FindNodeByUUID(physUUID)
 		if node != nil {
 			node.Status = "used"
+			node.RefCount++
 		}
 	}
 
@@ -120,6 +119,7 @@ func (a *Allocator) Alloc(logic *model.Topology, testbedNames []string) (*AllocR
 }
 
 // Free releases a previously allocated physical environment
+// For share nodes, decrements reference count; only resets to idle when count reaches 0
 func (a *Allocator) Free(allocResult *AllocResult) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -131,7 +131,13 @@ func (a *Allocator) Free(allocResult *AllocResult) error {
 
 	for physUUID := range allocResult.Nodes {
 		node := topo.FindNodeByUUID(physUUID)
-		if node != nil && !node.Share {
+		if node == nil {
+			continue
+		}
+		if node.RefCount > 0 {
+			node.RefCount--
+		}
+		if node.RefCount == 0 {
 			node.Status = "idle"
 		}
 	}
@@ -152,7 +158,7 @@ func (a *Allocator) ListTestbeds() []string {
 }
 
 // GetTestbedStatus returns the status of all nodes in a testbed
-func (a *Allocator) GetTestbedStatus(name string) (map[string]string, error) {
+func (a *Allocator) GetTestbedStatus(name string) (map[string]NodeStatus, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -161,11 +167,22 @@ func (a *Allocator) GetTestbedStatus(name string) (map[string]string, error) {
 		return nil, fmt.Errorf("testbed %s not found", name)
 	}
 
-	status := make(map[string]string)
+	status := make(map[string]NodeStatus)
 	for _, node := range topo.AllNodes() {
-		status[node.UUID] = node.Status
+		status[node.UUID] = NodeStatus{
+			Status:   node.Status,
+			Share:    node.Share,
+			RefCount: node.RefCount,
+		}
 	}
 	return status, nil
+}
+
+// NodeStatus holds detailed node status info
+type NodeStatus struct {
+	Status   string `json:"status"`
+	Share    bool   `json:"share"`
+	RefCount int    `json:"ref_count"`
 }
 
 func buildAllocResult(mr *matcher.MatchResult, topo *model.Topology) *AllocResult {

@@ -16,7 +16,8 @@ type Node struct {
 	Children   []*Node           // child nodes (unordered)
 	Properties map[string]string // dynamic properties
 	Status     string            // "idle" or "used" (only for testbed nodes)
-	Share      bool              // reserved: allow shared allocation
+	Share      bool              // allow shared allocation
+	RefCount   int               // reference count for share nodes (internal, not serialized)
 }
 
 // Link represents a directed connection between two nodes
