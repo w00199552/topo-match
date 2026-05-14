@@ -8,8 +8,8 @@ import (
 
 // MatchResult holds the result of a successful match
 type MatchResult struct {
-	TestbedName string               // which testbed matched
-	Mapping     map[string]string    // logic UUID -> physical UUID
+	TestbedName string                // which testbed matched
+	Mapping     map[string]string     // logic UUID -> physical UUID
 	Nodes       map[string]*model.Node // physical UUID -> Node (matched nodes)
 }
 
@@ -22,36 +22,33 @@ func NewMatcher() *Matcher {
 }
 
 // Match tries to find a matching subtree in the testbed for the given logic topology.
+// Supports multiple root devices: all logic root devices must be matched.
 // Returns nil if no match found.
 func (m *Matcher) Match(logic *model.Topology, testbed *model.Topology, testbedName string) *MatchResult {
 	if len(logic.RootDevices) == 0 {
 		return nil
 	}
 
-	// Collect all nodes in testbed as potential root candidates
+	// For single root device, use simple matching
+	if len(logic.RootDevices) == 1 {
+		return m.matchSingleRoot(logic.RootDevices[0], logic, testbed, testbedName)
+	}
+
+	// For multiple root devices, try to match all of them
+	return m.matchMultipleRoots(logic, testbed, testbedName)
+}
+
+// matchSingleRoot matches a single logic root device against the testbed
+func (m *Matcher) matchSingleRoot(logicRoot *model.Node, logic *model.Topology, testbed *model.Topology, testbedName string) *MatchResult {
 	allTestbedNodes := testbed.AllNodes()
 
-	// Try matching starting from each testbed node
 	for _, candidate := range allTestbedNodes {
-		mapping := make(map[string]string) // logicUUID -> physicalUUID
-		used := make(map[string]bool)      // physicalUUID -> used in this match
+		mapping := make(map[string]string)
+		used := make(map[string]bool)
 
-		if m.matchNode(logic.RootDevices[0], candidate, mapping, used) {
-			// Check link constraints
+		if m.matchNode(logicRoot, candidate, mapping, used) {
 			if m.checkLinks(logic, testbed, mapping) {
-				// Build result
-				result := &MatchResult{
-					TestbedName: testbedName,
-					Mapping:     mapping,
-					Nodes:       make(map[string]*model.Node),
-				}
-				for _, physUUID := range mapping {
-					node := testbed.FindNodeByUUID(physUUID)
-					if node != nil {
-						result.Nodes[physUUID] = node
-					}
-				}
-				return result
+				return m.buildResult(testbedName, mapping, testbed)
 			}
 		}
 	}
@@ -59,15 +56,75 @@ func (m *Matcher) Match(logic *model.Topology, testbed *model.Topology, testbedN
 	return nil
 }
 
+// matchMultipleRoots tries to match all logic root devices against the testbed
+func (m *Matcher) matchMultipleRoots(logic *model.Topology, testbed *model.Topology, testbedName string) *MatchResult {
+	allTestbedNodes := testbed.AllNodes()
+	globalMapping := make(map[string]string)
+	globalUsed := make(map[string]bool)
+
+	if m.backtrackRoots(logic, 0, allTestbedNodes, globalMapping, globalUsed, testbed) {
+		if m.checkLinks(logic, testbed, globalMapping) {
+			return m.buildResult(testbedName, globalMapping, testbed)
+		}
+	}
+	return nil
+}
+
+func (m *Matcher) backtrackRoots(
+	logic *model.Topology,
+	rootIdx int,
+	candidates []*model.Node,
+	globalMapping map[string]string,
+	globalUsed map[string]bool,
+	testbed *model.Topology,
+) bool {
+	if rootIdx == len(logic.RootDevices) {
+		return true
+	}
+
+	savedMapping := copyMap(globalMapping)
+	savedUsed := copyBoolMap(globalUsed)
+
+	for _, candidate := range candidates {
+		if globalUsed[candidate.UUID] {
+			continue
+		}
+
+		if m.matchNode(logic.RootDevices[rootIdx], candidate, globalMapping, globalUsed) {
+			if m.backtrackRoots(logic, rootIdx+1, candidates, globalMapping, globalUsed, testbed) {
+				return true
+			}
+			// Backtrack
+			restoreMap(globalMapping, savedMapping)
+			restoreBoolMap(globalUsed, savedUsed)
+		}
+	}
+
+	return false
+}
+
+// buildResult constructs a MatchResult from a mapping
+func (m *Matcher) buildResult(testbedName string, mapping map[string]string, testbed *model.Topology) *MatchResult {
+	result := &MatchResult{
+		TestbedName: testbedName,
+		Mapping:     mapping,
+		Nodes:       make(map[string]*model.Node),
+	}
+	for _, physUUID := range mapping {
+		node := testbed.FindNodeByUUID(physUUID)
+		if node != nil {
+			result.Nodes[physUUID] = node
+		}
+	}
+	return result
+}
+
 // matchNode tries to match a logic node against a physical candidate node.
-// It recursively matches children (unordered).
 func (m *Matcher) matchNode(logicNode *model.Node, physNode *model.Node, mapping map[string]string, used map[string]bool) bool {
-	// Check device_type
 	if logicNode.DeviceType != physNode.DeviceType {
 		return false
 	}
 
-	// Check status: must be idle, or used+shareable
 	if physNode.Status == "used" && !physNode.Share {
 		return false
 	}
@@ -75,12 +132,10 @@ func (m *Matcher) matchNode(logicNode *model.Node, physNode *model.Node, mapping
 		return false
 	}
 
-	// Check if physical node already used in this match (prevent duplicate mapping)
 	if used[physNode.UUID] {
 		return false
 	}
 
-	// Check properties (logic property non-empty -> must match exactly)
 	for key, logicVal := range logicNode.Properties {
 		if logicVal != "" {
 			physVal, ok := physNode.Properties[key]
@@ -90,11 +145,9 @@ func (m *Matcher) matchNode(logicNode *model.Node, physNode *model.Node, mapping
 		}
 	}
 
-	// Record mapping
 	mapping[logicNode.UUID] = physNode.UUID
 	used[physNode.UUID] = true
 
-	// Check child count
 	if len(logicNode.Children) != len(physNode.Children) {
 		delete(mapping, logicNode.UUID)
 		delete(used, physNode.UUID)
@@ -105,12 +158,9 @@ func (m *Matcher) matchNode(logicNode *model.Node, physNode *model.Node, mapping
 		return true
 	}
 
-	// Try to match children (unordered) using backtracking
 	return m.matchChildren(logicNode.Children, physNode.Children, mapping, used)
 }
 
-// matchChildren tries to find a bijection between logic children and physical children.
-// Since children are unordered, we try all permutations via backtracking.
 func (m *Matcher) matchChildren(logicChildren []*model.Node, physChildren []*model.Node, mapping map[string]string, used map[string]bool) bool {
 	usedPhys := make(map[int]bool)
 	return m.backtrackChildren(logicChildren, physChildren, 0, usedPhys, mapping, used)
@@ -128,7 +178,6 @@ func (m *Matcher) backtrackChildren(
 		return true
 	}
 
-	// Save mapping state for backtracking
 	savedMapping := copyMap(mapping)
 	savedUsed := copyBoolMap(used)
 
@@ -137,15 +186,12 @@ func (m *Matcher) backtrackChildren(
 			continue
 		}
 
-		// Try matching logicChildren[idx] with physChildren[j]
 		if m.matchNode(logicChildren[idx], physChildren[j], mapping, used) {
 			usedPhys[j] = true
 			if m.backtrackChildren(logicChildren, physChildren, idx+1, usedPhys, mapping, used) {
 				return true
 			}
-			// Backtrack
 			usedPhys[j] = false
-			// Restore mapping and used
 			restoreMap(mapping, savedMapping)
 			restoreBoolMap(used, savedUsed)
 		}
@@ -154,7 +200,6 @@ func (m *Matcher) backtrackChildren(
 	return false
 }
 
-// checkLinks verifies that all links in the logic topology have corresponding links in the testbed
 func (m *Matcher) checkLinks(logic *model.Topology, testbed *model.Topology, mapping map[string]string) bool {
 	for _, logicLink := range logic.Links {
 		physSourceUUID, ok := mapping[logicLink.SourceUUID]
@@ -166,17 +211,14 @@ func (m *Matcher) checkLinks(logic *model.Topology, testbed *model.Topology, map
 			return false
 		}
 
-		// Find matching link in testbed
 		found := false
 		for _, physLink := range testbed.Links {
-			// Check forward direction
 			if physLink.SourceUUID == physSourceUUID && physLink.TargetUUID == physTargetUUID {
 				if physLink.Dir == logicLink.Dir {
 					found = true
 					break
 				}
 			}
-			// For bidirectional links, also check reverse
 			if logicLink.Dir == model.LinkDirTwoWay && physLink.Dir == model.LinkDirTwoWay {
 				if physLink.SourceUUID == physTargetUUID && physLink.TargetUUID == physSourceUUID {
 					found = true

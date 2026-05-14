@@ -2,6 +2,9 @@ package server
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/w00199552/topo-match/internal/allocator"
@@ -12,6 +15,7 @@ import (
 type Server struct {
 	app       *fiber.App
 	allocator *allocator.Allocator
+	dataDir   string // allowed base directory for XML files
 }
 
 // NewServer creates a new Server
@@ -21,6 +25,20 @@ func NewServer() *Server {
 			AppName: "topo-match",
 		}),
 		allocator: allocator.NewAllocator(),
+		dataDir:   "/", // default: allow all paths; restrict in production
+	}
+	s.setupRoutes()
+	return s
+}
+
+// NewServerWithDataDir creates a Server with a restricted data directory
+func NewServerWithDataDir(dataDir string) *Server {
+	s := &Server{
+		app: fiber.New(fiber.Config{
+			AppName: "topo-match",
+		}),
+		allocator: allocator.NewAllocator(),
+		dataDir:   dataDir,
 	}
 	s.setupRoutes()
 	return s
@@ -38,6 +56,26 @@ func (s *Server) setupRoutes() {
 	// Allocation
 	api.Post("/alloc", s.alloc)
 	api.Post("/free", s.free)
+
+	// Health check
+	api.Get("/health", s.health)
+}
+
+// validateFilePath ensures the path is within allowed directory
+func (s *Server) validateFilePath(path string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
+	if s.dataDir != "/" {
+		if !strings.HasPrefix(absPath, s.dataDir) {
+			return fmt.Errorf("path %s is outside allowed directory %s", absPath, s.dataDir)
+		}
+	}
+	if _, err := os.Stat(absPath); os.IsNotExist(err) {
+		return fmt.Errorf("file not found: %s", absPath)
+	}
+	return nil
 }
 
 // --- Request/Response types ---
@@ -67,6 +105,10 @@ type response struct {
 func (s *Server) addTestbed(c *fiber.Ctx) error {
 	req := new(addTestbedRequest)
 	if err := c.BodyParser(req); err != nil {
+		return c.JSON(response{Success: false, Error: err.Error()})
+	}
+
+	if err := s.validateFilePath(req.FilePath); err != nil {
 		return c.JSON(response{Success: false, Error: err.Error()})
 	}
 
@@ -105,6 +147,10 @@ func (s *Server) alloc(c *fiber.Ctx) error {
 		return c.JSON(response{Success: false, Error: err.Error()})
 	}
 
+	if err := s.validateFilePath(req.LogicFilePath); err != nil {
+		return c.JSON(response{Success: false, Error: err.Error()})
+	}
+
 	logic, err := model.ParseXMLFile(req.LogicFilePath)
 	if err != nil {
 		return c.JSON(response{Success: false, Error: fmt.Sprintf("parse logic xml: %v", err)})
@@ -124,11 +170,19 @@ func (s *Server) free(c *fiber.Ctx) error {
 		return c.JSON(response{Success: false, Error: err.Error()})
 	}
 
+	if req.AllocResult == nil {
+		return c.JSON(response{Success: false, Error: "alloc_result is required"})
+	}
+
 	if err := s.allocator.Free(req.AllocResult); err != nil {
 		return c.JSON(response{Success: false, Error: err.Error()})
 	}
 
 	return c.JSON(response{Success: true})
+}
+
+func (s *Server) health(c *fiber.Ctx) error {
+	return c.JSON(response{Success: true, Data: map[string]string{"status": "ok"}})
 }
 
 // Run starts the HTTP server
