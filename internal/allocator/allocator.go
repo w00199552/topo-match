@@ -2,6 +2,7 @@ package allocator
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/w00199552/topo-match/internal/matcher"
@@ -21,6 +22,7 @@ type NodeInfo struct {
 	DeviceType string            `json:"device_type"`
 	Properties map[string]string `json:"properties"`
 	Status     string            `json:"status"`
+	Share      bool              `json:"share"`
 }
 
 // Allocator manages allocation and freeing of physical environments
@@ -54,8 +56,11 @@ func (a *Allocator) RemoveTestbed(name string) {
 
 // Alloc tries to allocate a physical environment matching the logic topology
 // across the given testbeds. Uses goroutines for concurrent matching.
+// The mutex is held during the entire match+mark operation to prevent race conditions.
 func (a *Allocator) Alloc(logic *model.Topology, testbedNames []string) (*AllocResult, error) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	// Collect testbed topologies
 	type tbEntry struct {
 		name string
@@ -63,15 +68,13 @@ func (a *Allocator) Alloc(logic *model.Topology, testbedNames []string) (*AllocR
 	}
 	var entries []tbEntry
 	for _, name := range testbedNames {
-		name = trimSpace(name)
+		name = strings.TrimSpace(name)
 		topo, ok := a.testbeds[name]
 		if !ok {
-			a.mu.Unlock()
 			return nil, fmt.Errorf("testbed %s not found", name)
 		}
 		entries = append(entries, tbEntry{name: name, topo: topo})
 	}
-	a.mu.Unlock()
 
 	if len(entries) == 0 {
 		return nil, fmt.Errorf("no testbeds provided")
@@ -80,7 +83,6 @@ func (a *Allocator) Alloc(logic *model.Topology, testbedNames []string) (*AllocR
 	// Concurrent matching across testbeds
 	type matchOutput struct {
 		result *matcher.MatchResult
-		err    error
 		index  int
 	}
 
@@ -105,8 +107,7 @@ func (a *Allocator) Alloc(logic *model.Topology, testbedNames []string) (*AllocR
 		return nil, fmt.Errorf("无空闲的测试床物理环境可用")
 	}
 
-	// Mark matched nodes as used
-	a.mu.Lock()
+	// Mark matched nodes as used (still holding the lock)
 	topo := a.testbeds[firstResult.TestbedName]
 	for physUUID := range firstResult.Nodes {
 		node := topo.FindNodeByUUID(physUUID)
@@ -114,7 +115,6 @@ func (a *Allocator) Alloc(logic *model.Topology, testbedNames []string) (*AllocR
 			node.Status = "used"
 		}
 	}
-	a.mu.Unlock()
 
 	return buildAllocResult(firstResult, topo), nil
 }
@@ -131,7 +131,7 @@ func (a *Allocator) Free(allocResult *AllocResult) error {
 
 	for physUUID := range allocResult.Nodes {
 		node := topo.FindNodeByUUID(physUUID)
-		if node != nil {
+		if node != nil && !node.Share {
 			node.Status = "idle"
 		}
 	}
@@ -181,20 +181,9 @@ func buildAllocResult(mr *matcher.MatchResult, topo *model.Topology) *AllocResul
 			DeviceType: node.DeviceType,
 			Properties: node.Properties,
 			Status:     "used",
+			Share:      node.Share,
 		}
 	}
 
-	return result
-}
-
-func trimSpace(s string) string {
-	// Simple trim - avoid importing strings for just this
-	result := s
-	for len(result) > 0 && (result[0] == ' ' || result[0] == '\t') {
-		result = result[1:]
-	}
-	for len(result) > 0 && (result[len(result)-1] == ' ' || result[len(result)-1] == '\t') {
-		result = result[:len(result)-1]
-	}
 	return result
 }
