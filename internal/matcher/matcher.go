@@ -67,12 +67,15 @@ func (m *Matcher) matchNode(logicNode *model.Node, physNode *model.Node, mapping
 		return false
 	}
 
-	// Check status (must be idle)
-	if physNode.Status != "idle" {
+	// Check status: must be idle, or used+shareable
+	if physNode.Status == "used" && !physNode.Share {
+		return false
+	}
+	if physNode.Status != "idle" && physNode.Status != "used" {
 		return false
 	}
 
-	// Check if physical node already used in this match
+	// Check if physical node already used in this match (prevent duplicate mapping)
 	if used[physNode.UUID] {
 		return false
 	}
@@ -84,14 +87,6 @@ func (m *Matcher) matchNode(logicNode *model.Node, physNode *model.Node, mapping
 			if !ok || physVal != logicVal {
 				return false
 			}
-		}
-	}
-
-	// Check objname (if logic node has one, must match)
-	if logicNode.ObjName != "" && physNode.ObjName != "" {
-		if logicNode.ObjName != physNode.ObjName {
-			// objname is just a label, not a hard constraint unless we decide otherwise
-			// For now, objname does NOT need to match (it's just a display name)
 		}
 	}
 
@@ -117,18 +112,14 @@ func (m *Matcher) matchNode(logicNode *model.Node, physNode *model.Node, mapping
 // matchChildren tries to find a bijection between logic children and physical children.
 // Since children are unordered, we try all permutations via backtracking.
 func (m *Matcher) matchChildren(logicChildren []*model.Node, physChildren []*model.Node, mapping map[string]string, used map[string]bool) bool {
-	n := len(logicChildren)
-	assigned := make([]int, 0, n) // which phys child index is assigned to each logic child
 	usedPhys := make(map[int]bool)
-
-	return m.backtrackChildren(logicChildren, physChildren, 0, assigned, usedPhys, mapping, used)
+	return m.backtrackChildren(logicChildren, physChildren, 0, usedPhys, mapping, used)
 }
 
 func (m *Matcher) backtrackChildren(
 	logicChildren []*model.Node,
 	physChildren []*model.Node,
 	idx int,
-	assigned []int,
 	usedPhys map[int]bool,
 	mapping map[string]string,
 	used map[string]bool,
@@ -149,7 +140,7 @@ func (m *Matcher) backtrackChildren(
 		// Try matching logicChildren[idx] with physChildren[j]
 		if m.matchNode(logicChildren[idx], physChildren[j], mapping, used) {
 			usedPhys[j] = true
-			if m.backtrackChildren(logicChildren, physChildren, idx+1, assigned, usedPhys, mapping, used) {
+			if m.backtrackChildren(logicChildren, physChildren, idx+1, usedPhys, mapping, used) {
 				return true
 			}
 			// Backtrack
